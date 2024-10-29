@@ -1,12 +1,14 @@
+import binascii
+import hashlib
 import logging
 import os
 from typing import List
 
-import binascii
 from django import forms
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import User
+from django.core.validators import MinValueValidator
 from django.db import models
 from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
@@ -55,7 +57,9 @@ class Bookmark(models.Model):
     title = models.CharField(max_length=512, blank=True)
     description = models.TextField(blank=True)
     notes = models.TextField(blank=True)
+    # Obsolete field, kept to not remove column when generating migrations
     website_title = models.CharField(max_length=512, blank=True, null=True)
+    # Obsolete field, kept to not remove column when generating migrations
     website_description = models.TextField(blank=True, null=True)
     web_archive_snapshot_url = models.CharField(max_length=2048, blank=True)
     favicon_file = models.CharField(max_length=512, blank=True)
@@ -73,18 +77,17 @@ class Bookmark(models.Model):
     def resolved_title(self):
         if self.title:
             return self.title
-        elif self.website_title:
-            return self.website_title
         else:
             return self.url
 
     @property
     def resolved_description(self):
-        return self.website_description if not self.description else self.description
+        return self.description
 
     @property
     def tag_names(self):
-        return [tag.name for tag in self.tags.all()]
+        names = [tag.name for tag in self.tags.all()]
+        return sorted(names)
 
     def __str__(self):
         return self.resolved_title + " (" + self.url[:30] + "...)"
@@ -139,14 +142,9 @@ class BookmarkForm(forms.ModelForm):
     # Use URLField for URL
     url = forms.CharField(validators=[BookmarkURLValidator()])
     tag_string = forms.CharField(required=False)
-    # Do not require title and description in form as we fill these automatically if they are empty
+    # Do not require title and description as they may be empty
     title = forms.CharField(max_length=512, required=False)
     description = forms.CharField(required=False, widget=forms.Textarea())
-    # Include website title and description as hidden field as they only provide info when editing bookmarks
-    website_title = forms.CharField(
-        max_length=512, required=False, widget=forms.HiddenInput()
-    )
-    website_description = forms.CharField(required=False, widget=forms.HiddenInput())
     unread = forms.BooleanField(required=False)
     shared = forms.BooleanField(required=False)
     # Hidden field that determines whether to close window/tab after saving the bookmark
@@ -160,8 +158,6 @@ class BookmarkForm(forms.ModelForm):
             "title",
             "description",
             "notes",
-            "website_title",
-            "website_description",
             "unread",
             "shared",
             "auto_close",
@@ -169,7 +165,27 @@ class BookmarkForm(forms.ModelForm):
 
     @property
     def has_notes(self):
-        return self.instance and self.instance.notes
+        return self.initial.get("notes", None) or (
+            self.instance and self.instance.notes
+        )
+
+    def clean_url(self):
+        # When creating a bookmark, the service logic prevents duplicate URLs by
+        # updating the existing bookmark instead, which is also communicated in
+        # the form's UI. When editing a bookmark, there is no assumption that
+        # it would update a different bookmark if the URL is a duplicate, so
+        # raise a validation error in that case.
+        url = self.cleaned_data["url"]
+        if self.instance.pk:
+            is_duplicate = (
+                Bookmark.objects.filter(owner=self.instance.owner, url=url)
+                .exclude(pk=self.instance.pk)
+                .exists()
+            )
+            if is_duplicate:
+                raise forms.ValidationError("A bookmark with this URL already exists.")
+
+        return url
 
 
 class BookmarkSearch:
@@ -279,7 +295,7 @@ class BookmarkSearchForm(forms.Form):
     ]
 
     q = forms.CharField()
-    user = forms.ChoiceField()
+    user = forms.ChoiceField(required=False)
     sort = forms.ChoiceField(choices=SORT_CHOICES)
     shared = forms.ChoiceField(choices=FILTER_SHARED_CHOICES, widget=forms.RadioSelect)
     unread = forms.ChoiceField(choices=FILTER_UNREAD_CHOICES, widget=forms.RadioSelect)
@@ -415,10 +431,24 @@ class UserProfile(models.Model):
     display_remove_bookmark_action = models.BooleanField(default=True, null=False)
     permanent_notes = models.BooleanField(default=False, null=False)
     custom_css = models.TextField(blank=True, null=False)
+    custom_css_hash = models.CharField(blank=True, null=False, max_length=32)
     auto_tagging_rules = models.TextField(blank=True, null=False)
     search_preferences = models.JSONField(default=dict, null=False)
     enable_automatic_html_snapshots = models.BooleanField(default=True, null=False)
     default_mark_unread = models.BooleanField(default=False, null=False)
+    items_per_page = models.IntegerField(
+        null=False, default=30, validators=[MinValueValidator(10)]
+    )
+    sticky_pagination = models.BooleanField(default=False, null=False)
+
+    def save(self, *args, **kwargs):
+        if self.custom_css:
+            self.custom_css_hash = hashlib.md5(
+                self.custom_css.encode("utf-8")
+            ).hexdigest()
+        else:
+            self.custom_css_hash = ""
+        super().save(*args, **kwargs)
 
 
 class UserProfileForm(forms.ModelForm):
@@ -447,6 +477,8 @@ class UserProfileForm(forms.ModelForm):
             "default_mark_unread",
             "custom_css",
             "auto_tagging_rules",
+            "items_per_page",
+            "sticky_pagination",
         ]
 
 
@@ -492,3 +524,46 @@ class FeedToken(models.Model):
 
     def __str__(self):
         return self.key
+
+
+class GlobalSettings(models.Model):
+    LANDING_PAGE_LOGIN = "login"
+    LANDING_PAGE_SHARED_BOOKMARKS = "shared_bookmarks"
+    LANDING_PAGE_CHOICES = [
+        (LANDING_PAGE_LOGIN, "Login"),
+        (LANDING_PAGE_SHARED_BOOKMARKS, "Shared Bookmarks"),
+    ]
+
+    landing_page = models.CharField(
+        max_length=50,
+        choices=LANDING_PAGE_CHOICES,
+        blank=False,
+        default=LANDING_PAGE_LOGIN,
+    )
+    guest_profile_user = models.ForeignKey(
+        get_user_model(), on_delete=models.SET_NULL, null=True, blank=True
+    )
+    enable_link_prefetch = models.BooleanField(default=False, null=False)
+
+    @classmethod
+    def get(cls):
+        instance = GlobalSettings.objects.first()
+        if not instance:
+            instance = GlobalSettings()
+            instance.save()
+        return instance
+
+    def save(self, *args, **kwargs):
+        if not self.pk and GlobalSettings.objects.exists():
+            raise Exception("There is already one instance of GlobalSettings")
+        return super(GlobalSettings, self).save(*args, **kwargs)
+
+
+class GlobalSettingsForm(forms.ModelForm):
+    class Meta:
+        model = GlobalSettings
+        fields = ["landing_page", "guest_profile_user", "enable_link_prefetch"]
+
+    def __init__(self, *args, **kwargs):
+        super(GlobalSettingsForm, self).__init__(*args, **kwargs)
+        self.fields["guest_profile_user"].empty_label = "Standard profile"

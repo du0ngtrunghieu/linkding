@@ -12,7 +12,32 @@ class AutoTaggingTestCase(TestCase):
 
         tags = auto_tagging.get_tags(script, url)
 
-        self.assertEqual(tags, set(["example"]))
+        self.assertEqual(tags, {"example"})
+
+    def test_auto_tag_by_domain_handles_invalid_urls(self):
+        script = """
+            example.com example
+            test.com test
+        """
+
+        url = "https://"
+        tags = auto_tagging.get_tags(script, url)
+        self.assertEqual(tags, set([]))
+
+        url = "example.com"
+        tags = auto_tagging.get_tags(script, url)
+        self.assertEqual(tags, set([]))
+
+    def test_auto_tag_by_domain_works_with_port(self):
+        script = """
+            example.com example
+            test.com test
+        """
+        url = "https://example.com:8080/"
+
+        tags = auto_tagging.get_tags(script, url)
+
+        self.assertEqual(tags, {"example"})
 
     def test_auto_tag_by_domain_ignores_case(self):
         script = """
@@ -22,7 +47,7 @@ class AutoTaggingTestCase(TestCase):
 
         tags = auto_tagging.get_tags(script, url)
 
-        self.assertEqual(tags, set(["example"]))
+        self.assertEqual(tags, {"example"})
 
     def test_auto_tag_by_domain_should_add_all_tags(self):
         script = """
@@ -32,7 +57,7 @@ class AutoTaggingTestCase(TestCase):
 
         tags = auto_tagging.get_tags(script, url)
 
-        self.assertEqual(tags, set(["one", "two", "three"]))
+        self.assertEqual(tags, {"one", "two", "three"})
 
     def test_auto_tag_by_domain_work_with_idn_domains(self):
         script = """
@@ -42,7 +67,7 @@ class AutoTaggingTestCase(TestCase):
 
         tags = auto_tagging.get_tags(script, url)
 
-        self.assertEqual(tags, set(["tag1"]))
+        self.assertEqual(tags, {"tag1"})
 
         script = """
             xn--81bg3cc2b2bk5hb.xn--h2brj9c tag1
@@ -51,7 +76,7 @@ class AutoTaggingTestCase(TestCase):
 
         tags = auto_tagging.get_tags(script, url)
 
-        self.assertEqual(tags, set(["tag1"]))
+        self.assertEqual(tags, {"tag1"})
 
     def test_auto_tag_by_domain_and_path(self):
         script = """
@@ -63,7 +88,7 @@ class AutoTaggingTestCase(TestCase):
 
         tags = auto_tagging.get_tags(script, url)
 
-        self.assertEqual(tags, set(["one"]))
+        self.assertEqual(tags, {"one"})
 
     def test_auto_tag_by_domain_and_path_ignores_case(self):
         script = """
@@ -73,7 +98,7 @@ class AutoTaggingTestCase(TestCase):
 
         tags = auto_tagging.get_tags(script, url)
 
-        self.assertEqual(tags, set(["one"]))
+        self.assertEqual(tags, {"one"})
 
     def test_auto_tag_by_domain_and_path_matches_path_ltr(self):
         script = """
@@ -85,7 +110,7 @@ class AutoTaggingTestCase(TestCase):
 
         tags = auto_tagging.get_tags(script, url)
 
-        self.assertEqual(tags, set(["one"]))
+        self.assertEqual(tags, {"one"})
 
     def test_auto_tag_by_domain_ignores_domain_in_path(self):
         script = """
@@ -107,7 +132,7 @@ class AutoTaggingTestCase(TestCase):
 
         tags = auto_tagging.get_tags(script, url)
 
-        self.assertEqual(tags, set(["example", "test"]))
+        self.assertEqual(tags, {"example", "test"})
 
     def test_auto_tag_by_domain_matches_domain_rtl(self):
         script = """
@@ -128,7 +153,7 @@ class AutoTaggingTestCase(TestCase):
 
         tags = auto_tagging.get_tags(script, url)
 
-        self.assertEqual(tags, set(["https", "http"]))
+        self.assertEqual(tags, {"https", "http"})
 
     def test_auto_tag_by_domain_ignores_lines_with_no_tags(self):
         script = """
@@ -154,7 +179,7 @@ class AutoTaggingTestCase(TestCase):
 
         tags = auto_tagging.get_tags(script, url)
 
-        self.assertEqual(tags, set(["tag1", "tag2", "tag5", "tag6", "tag7"]))
+        self.assertEqual(tags, {"tag1", "tag2", "tag5", "tag6", "tag7"})
 
     def test_auto_tag_by_domain_path_and_qs_with_empty_value(self):
         script = """
@@ -165,7 +190,7 @@ class AutoTaggingTestCase(TestCase):
 
         tags = auto_tagging.get_tags(script, url)
 
-        self.assertEqual(tags, set(["tag1"]))
+        self.assertEqual(tags, {"tag1"})
 
     def test_auto_tag_by_domain_path_and_qs_works_with_encoded_url(self):
         script = """
@@ -176,4 +201,4 @@ class AutoTaggingTestCase(TestCase):
 
         tags = auto_tagging.get_tags(script, url)
 
-        self.assertEqual(tags, set(["tag1", "tag2"]))
+        self.assertEqual(tags, {"tag1", "tag2"})

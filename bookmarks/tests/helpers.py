@@ -2,6 +2,7 @@ import random
 import logging
 from datetime import datetime
 from typing import List
+from unittest import TestCase
 
 from bs4 import BeautifulSoup
 from django.contrib.auth.models import User
@@ -24,6 +25,11 @@ class BookmarkFactoryMixin:
 
         return self.user
 
+    def setup_superuser(self):
+        return User.objects.create_superuser(
+            "superuser", "superuser@example.com", "password123"
+        )
+
     def setup_bookmark(
         self,
         is_archived: bool = False,
@@ -35,12 +41,11 @@ class BookmarkFactoryMixin:
         title: str = None,
         description: str = "",
         notes: str = "",
-        website_title: str = "",
-        website_description: str = "",
         web_archive_snapshot_url: str = "",
         favicon_file: str = "",
         preview_image_file: str = "",
         added: datetime = None,
+        modified: datetime = None,
     ):
         if title is None:
             title = get_random_string(length=32)
@@ -53,15 +58,15 @@ class BookmarkFactoryMixin:
             url = "https://example.com/" + unique_id
         if added is None:
             added = timezone.now()
+        if modified is None:
+            modified = timezone.now()
         bookmark = Bookmark(
             url=url,
             title=title,
             description=description,
             notes=notes,
-            website_title=website_title,
-            website_description=website_description,
             date_added=added,
-            date_modified=timezone.now(),
+            date_modified=modified,
             owner=user,
             is_archived=is_archived,
             unread=unread,
@@ -87,6 +92,8 @@ class BookmarkFactoryMixin:
         shared: bool = False,
         with_tags: bool = False,
         with_web_archive_snapshot_url: bool = False,
+        with_favicon_file: bool = False,
+        with_preview_image_file: bool = False,
         user: User = None,
     ):
         user = user or self.get_or_create_test_user()
@@ -118,6 +125,12 @@ class BookmarkFactoryMixin:
             web_archive_snapshot_url = ""
             if with_web_archive_snapshot_url:
                 web_archive_snapshot_url = f"https://web.archive.org/web/{i}"
+            favicon_file = ""
+            if with_favicon_file:
+                favicon_file = f"favicon_{i}.png"
+            preview_image_file = ""
+            if with_preview_image_file:
+                preview_image_file = f"preview_image_{i}.png"
             bookmark = self.setup_bookmark(
                 url=url,
                 title=title,
@@ -126,6 +139,8 @@ class BookmarkFactoryMixin:
                 shared=shared,
                 tags=tags,
                 web_archive_snapshot_url=web_archive_snapshot_url,
+                favicon_file=favicon_file,
+                preview_image_file=preview_image_file,
                 user=user,
             )
             bookmarks.append(bookmark)
@@ -205,6 +220,75 @@ class HtmlTestMixin:
         return BeautifulSoup(html, features="html.parser")
 
 
+class BookmarkListTestMixin(TestCase, HtmlTestMixin):
+    def assertVisibleBookmarks(
+        self, response, bookmarks: List[Bookmark], link_target: str = "_blank"
+    ):
+        soup = self.make_soup(response.content.decode())
+        bookmark_list = soup.select_one(
+            f'ul.bookmark-list[data-bookmarks-total="{len(bookmarks)}"]'
+        )
+        self.assertIsNotNone(bookmark_list)
+
+        bookmark_items = bookmark_list.select("li[ld-bookmark-item]")
+        self.assertEqual(len(bookmark_items), len(bookmarks))
+
+        for bookmark in bookmarks:
+            bookmark_item = bookmark_list.select_one(
+                f'li[ld-bookmark-item] a[href="{bookmark.url}"][target="{link_target}"]'
+            )
+            self.assertIsNotNone(bookmark_item)
+
+    def assertInvisibleBookmarks(
+        self, response, bookmarks: List[Bookmark], link_target: str = "_blank"
+    ):
+        soup = self.make_soup(response.content.decode())
+
+        for bookmark in bookmarks:
+            bookmark_item = soup.select_one(
+                f'li[ld-bookmark-item] a[href="{bookmark.url}"][target="{link_target}"]'
+            )
+            self.assertIsNone(bookmark_item)
+
+
+class TagCloudTestMixin(TestCase, HtmlTestMixin):
+    def assertVisibleTags(self, response, tags: List[Tag]):
+        soup = self.make_soup(response.content.decode())
+        tag_cloud = soup.select_one("div.tag-cloud")
+        self.assertIsNotNone(tag_cloud)
+
+        tag_items = tag_cloud.select("a[data-is-tag-item]")
+        self.assertEqual(len(tag_items), len(tags))
+
+        tag_item_names = [tag_item.text.strip() for tag_item in tag_items]
+
+        for tag in tags:
+            self.assertTrue(tag.name in tag_item_names)
+
+    def assertInvisibleTags(self, response, tags: List[Tag]):
+        soup = self.make_soup(response.content.decode())
+        tag_items = soup.select("a[data-is-tag-item]")
+
+        tag_item_names = [tag_item.text.strip() for tag_item in tag_items]
+
+        for tag in tags:
+            self.assertFalse(tag.name in tag_item_names)
+
+    def assertSelectedTags(self, response, tags: List[Tag]):
+        soup = self.make_soup(response.content.decode())
+        selected_tags = soup.select_one("p.selected-tags")
+        self.assertIsNotNone(selected_tags)
+
+        tag_list = selected_tags.select("a")
+        self.assertEqual(len(tag_list), len(tags))
+
+        for tag in tags:
+            self.assertTrue(
+                tag.name in selected_tags.text,
+                msg=f"Selected tags do not contain: {tag.name}",
+            )
+
+
 class LinkdingApiTestCase(APITestCase):
     def get(self, url, expected_status_code=status.HTTP_200_OK):
         response = self.client.get(url)
@@ -239,6 +323,7 @@ class BookmarkHtmlTag:
         title: str = "",
         description: str = "",
         add_date: str = "",
+        last_modified: str = "",
         tags: str = "",
         to_read: bool = False,
         private: bool = True,
@@ -247,6 +332,7 @@ class BookmarkHtmlTag:
         self.title = title
         self.description = description
         self.add_date = add_date
+        self.last_modified = last_modified
         self.tags = tags
         self.to_read = to_read
         self.private = private
@@ -258,6 +344,7 @@ class ImportTestMixin:
         <DT>
         <A {f'HREF="{tag.href}"' if tag.href else ''}
            {f'ADD_DATE="{tag.add_date}"' if tag.add_date else ''}
+           {f'LAST_MODIFIED="{tag.last_modified}"' if tag.last_modified else ''}
            {f'TAGS="{tag.tags}"' if tag.tags else ''}
            TOREAD="{1 if tag.to_read else 0}"
            PRIVATE="{1 if tag.private else 0}">

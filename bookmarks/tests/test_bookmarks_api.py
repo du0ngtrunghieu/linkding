@@ -33,9 +33,17 @@ class BookmarksApiTestCase(LinkdingApiTestCase, BookmarkFactoryMixin):
             expectation["title"] = bookmark.title
             expectation["description"] = bookmark.description
             expectation["notes"] = bookmark.notes
-            expectation["website_title"] = bookmark.website_title
-            expectation["website_description"] = bookmark.website_description
             expectation["web_archive_snapshot_url"] = bookmark.web_archive_snapshot_url
+            expectation["favicon_url"] = (
+                f"http://testserver/static/{bookmark.favicon_file}"
+                if bookmark.favicon_file
+                else None
+            )
+            expectation["preview_image_url"] = (
+                f"http://testserver/static/{bookmark.preview_image_file}"
+                if bookmark.preview_image_file
+                else None
+            )
             expectation["is_archived"] = bookmark.is_archived
             expectation["unread"] = bookmark.unread
             expectation["shared"] = bookmark.shared
@@ -46,6 +54,8 @@ class BookmarksApiTestCase(LinkdingApiTestCase, BookmarkFactoryMixin):
             expectation["date_modified"] = bookmark.date_modified.isoformat().replace(
                 "+00:00", "Z"
             )
+            expectation["website_title"] = None
+            expectation["website_description"] = None
             expectations.append(expectation)
 
         for data in data_list:
@@ -65,13 +75,30 @@ class BookmarksApiTestCase(LinkdingApiTestCase, BookmarkFactoryMixin):
     def test_list_bookmarks_with_more_details(self):
         self.authenticate()
         bookmarks = self.setup_numbered_bookmarks(
-            5, with_tags=True, with_web_archive_snapshot_url=True
+            5,
+            with_tags=True,
+            with_web_archive_snapshot_url=True,
+            with_favicon_file=True,
+            with_preview_image_file=True,
         )
 
         response = self.get(
             reverse("bookmarks:bookmark-list"), expected_status_code=status.HTTP_200_OK
         )
         self.assertBookmarkListEqual(response.data["results"], bookmarks)
+
+    def test_list_bookmarks_returns_none_for_website_title_and_description(self):
+        self.authenticate()
+        bookmark = self.setup_bookmark()
+        bookmark.website_title = "Website title"
+        bookmark.website_description = "Website description"
+        bookmark.save()
+
+        response = self.get(
+            reverse("bookmarks:bookmark-list"), expected_status_code=status.HTTP_200_OK
+        )
+        self.assertIsNone(response.data["results"][0]["website_title"])
+        self.assertIsNone(response.data["results"][0]["website_description"])
 
     def test_list_bookmarks_does_not_return_archived_bookmarks(self):
         self.authenticate()
@@ -171,6 +198,23 @@ class BookmarksApiTestCase(LinkdingApiTestCase, BookmarkFactoryMixin):
         )
         self.assertBookmarkListEqual(response.data["results"], archived_bookmarks)
 
+    def test_list_archived_bookmarks_with_more_details(self):
+        self.authenticate()
+        archived_bookmarks = self.setup_numbered_bookmarks(
+            5,
+            archived=True,
+            with_tags=True,
+            with_web_archive_snapshot_url=True,
+            with_favicon_file=True,
+            with_preview_image_file=True,
+        )
+
+        response = self.get(
+            reverse("bookmarks:bookmark-archived"),
+            expected_status_code=status.HTTP_200_OK,
+        )
+        self.assertBookmarkListEqual(response.data["results"], archived_bookmarks)
+
     def test_list_archived_bookmarks_should_filter_by_query(self):
         self.authenticate()
         search_value = self.get_random_string()
@@ -213,6 +257,26 @@ class BookmarksApiTestCase(LinkdingApiTestCase, BookmarkFactoryMixin):
         self.setup_bookmark(shared=False, user=user2)
         self.setup_bookmark(shared=False, user=user3)
         self.setup_bookmark(shared=True, user=user4)
+
+        response = self.get(
+            reverse("bookmarks:bookmark-shared"),
+            expected_status_code=status.HTTP_200_OK,
+        )
+        self.assertBookmarkListEqual(response.data["results"], shared_bookmarks)
+
+    def test_list_shared_bookmarks_with_more_details(self):
+        self.authenticate()
+
+        other_user = self.setup_user(enable_sharing=True)
+        shared_bookmarks = self.setup_numbered_bookmarks(
+            5,
+            shared=True,
+            user=other_user,
+            with_tags=True,
+            with_web_archive_snapshot_url=True,
+            with_favicon_file=True,
+            with_preview_image_file=True,
+        )
 
         response = self.get(
             reverse("bookmarks:bookmark-shared"),
@@ -331,6 +395,44 @@ class BookmarksApiTestCase(LinkdingApiTestCase, BookmarkFactoryMixin):
         self.assertEqual(bookmark.tags.filter(name=data["tag_names"][0]).count(), 1)
         self.assertEqual(bookmark.tags.filter(name=data["tag_names"][1]).count(), 1)
 
+    def test_create_bookmark_enhances_with_metadata_by_default(self):
+        self.authenticate()
+
+        data = {"url": "https://example.com/"}
+        with patch.object(website_loader, "load_website_metadata") as mock_load:
+            mock_load.return_value = WebsiteMetadata(
+                url="https://example.com/",
+                title="Website title",
+                description="Website description",
+                preview_image=None,
+            )
+            self.post(reverse("bookmarks:bookmark-list"), data, status.HTTP_201_CREATED)
+        bookmark = Bookmark.objects.get(url=data["url"])
+        self.assertEqual(bookmark.title, "Website title")
+        self.assertEqual(bookmark.description, "Website description")
+
+    def test_create_bookmark_does_not_enhance_with_metadata_if_scraping_is_disabled(
+        self,
+    ):
+        self.authenticate()
+
+        data = {"url": "https://example.com/"}
+        with patch.object(website_loader, "load_website_metadata") as mock_load:
+            mock_load.return_value = WebsiteMetadata(
+                url="https://example.com/",
+                title="Website title",
+                description="Website description",
+                preview_image=None,
+            )
+            self.post(
+                reverse("bookmarks:bookmark-list") + "?disable_scraping",
+                data,
+                status.HTTP_201_CREATED,
+            )
+        bookmark = Bookmark.objects.get(url=data["url"])
+        self.assertEqual(bookmark.title, "")
+        self.assertEqual(bookmark.description, "")
+
     def test_create_bookmark_with_same_url_updates_existing_bookmark(self):
         self.authenticate()
 
@@ -378,7 +480,21 @@ class BookmarksApiTestCase(LinkdingApiTestCase, BookmarkFactoryMixin):
         self.authenticate()
 
         data = {"url": "https://example.com/"}
-        self.post(reverse("bookmarks:bookmark-list"), data, status.HTTP_201_CREATED)
+        self.post(
+            reverse("bookmarks:bookmark-list") + "?disable_scraping",
+            data,
+            status.HTTP_201_CREATED,
+        )
+
+        bookmark = Bookmark.objects.get(url=data["url"])
+        self.assertEqual(data["url"], bookmark.url)
+        self.assertEqual("", bookmark.title)
+        self.assertEqual("", bookmark.description)
+        self.assertEqual("", bookmark.notes)
+        self.assertFalse(bookmark.is_archived)
+        self.assertFalse(bookmark.unread)
+        self.assertFalse(bookmark.shared)
+        self.assertBookmarkListEqual([], bookmark.tag_names)
 
     def test_create_archived_bookmark(self):
         self.authenticate()
@@ -484,6 +600,28 @@ class BookmarksApiTestCase(LinkdingApiTestCase, BookmarkFactoryMixin):
         updated_bookmark = Bookmark.objects.get(id=bookmark.id)
         self.assertEqual(updated_bookmark.url, data["url"])
 
+    def test_update_bookmark_ignores_readonly_fields(self):
+        self.authenticate()
+        bookmark = self.setup_bookmark()
+
+        data = {
+            "url": "https://example.com/updated",
+            "web_archive_snapshot_url": "test",
+            "website_title": "test",
+            "website_description": "test",
+        }
+        url = reverse("bookmarks:bookmark-detail", args=[bookmark.id])
+        self.put(url, data, expected_status_code=status.HTTP_200_OK)
+        updated_bookmark = Bookmark.objects.get(id=bookmark.id)
+        self.assertEqual(data["url"], updated_bookmark.url)
+        self.assertNotEqual(
+            data["web_archive_snapshot_url"], updated_bookmark.web_archive_snapshot_url
+        )
+        self.assertNotEqual(data["website_title"], updated_bookmark.website_title)
+        self.assertNotEqual(
+            data["website_description"], updated_bookmark.website_description
+        )
+
     def test_update_bookmark_fails_without_required_fields(self):
         self.authenticate()
         bookmark = self.setup_bookmark()
@@ -492,19 +630,24 @@ class BookmarksApiTestCase(LinkdingApiTestCase, BookmarkFactoryMixin):
         url = reverse("bookmarks:bookmark-detail", args=[bookmark.id])
         self.put(url, data, expected_status_code=status.HTTP_400_BAD_REQUEST)
 
-    def test_update_bookmark_with_minimal_payload_clears_all_fields(self):
+    def test_update_bookmark_with_minimal_payload_does_not_modify_bookmark(self):
         self.authenticate()
-        bookmark = self.setup_bookmark()
+        bookmark = self.setup_bookmark(
+            is_archived=True, unread=True, shared=True, tags=[self.setup_tag()]
+        )
 
         data = {"url": "https://example.com/"}
         url = reverse("bookmarks:bookmark-detail", args=[bookmark.id])
         self.put(url, data, expected_status_code=status.HTTP_200_OK)
         updated_bookmark = Bookmark.objects.get(id=bookmark.id)
         self.assertEqual(updated_bookmark.url, data["url"])
-        self.assertEqual(updated_bookmark.title, "")
-        self.assertEqual(updated_bookmark.description, "")
-        self.assertEqual(updated_bookmark.notes, "")
-        self.assertEqual(updated_bookmark.tag_names, [])
+        self.assertEqual(updated_bookmark.title, bookmark.title)
+        self.assertEqual(updated_bookmark.description, bookmark.description)
+        self.assertEqual(updated_bookmark.notes, bookmark.notes)
+        self.assertEqual(updated_bookmark.is_archived, bookmark.is_archived)
+        self.assertEqual(updated_bookmark.unread, bookmark.unread)
+        self.assertEqual(updated_bookmark.shared, bookmark.shared)
+        self.assertListEqual(updated_bookmark.tag_names, bookmark.tag_names)
 
     def test_update_bookmark_unread_flag(self):
         self.authenticate()
@@ -541,6 +684,29 @@ class BookmarksApiTestCase(LinkdingApiTestCase, BookmarkFactoryMixin):
         self.put(url, data, expected_status_code=status.HTTP_200_OK)
         updated_bookmark = Bookmark.objects.get(id=bookmark.id)
         self.assertCountEqual(updated_bookmark.tags.all(), [tag1, tag2])
+
+    def test_update_bookmark_should_prevent_duplicate_urls(self):
+        self.authenticate()
+        edited_bookmark = self.setup_bookmark(url="https://example.com/edited")
+        existing_bookmark = self.setup_bookmark(url="https://example.com/existing")
+        other_user_bookmark = self.setup_bookmark(
+            url="https://example.com/other", user=self.setup_user()
+        )
+
+        # if the URL isn't modified it's not a duplicate
+        data = {"url": edited_bookmark.url}
+        url = reverse("bookmarks:bookmark-detail", args=[edited_bookmark.id])
+        self.put(url, data, expected_status_code=status.HTTP_200_OK)
+
+        # if the URL is already bookmarked by another user, it's not a duplicate
+        data = {"url": other_user_bookmark.url}
+        url = reverse("bookmarks:bookmark-detail", args=[edited_bookmark.id])
+        self.put(url, data, expected_status_code=status.HTTP_200_OK)
+
+        # if the URL is already bookmarked by the same user, it's a duplicate
+        data = {"url": existing_bookmark.url}
+        url = reverse("bookmarks:bookmark-detail", args=[edited_bookmark.id])
+        self.put(url, data, expected_status_code=status.HTTP_400_BAD_REQUEST)
 
     def test_patch_bookmark(self):
         self.authenticate()
@@ -601,9 +767,31 @@ class BookmarksApiTestCase(LinkdingApiTestCase, BookmarkFactoryMixin):
         tag_names = [tag.name for tag in bookmark.tags.all()]
         self.assertListEqual(tag_names, ["updated-tag-1", "updated-tag-2"])
 
-    def test_patch_with_empty_payload_does_not_modify_bookmark(self):
+    def test_patch_ignores_readonly_fields(self):
         self.authenticate()
         bookmark = self.setup_bookmark()
+
+        data = {
+            "web_archive_snapshot_url": "test",
+            "website_title": "test",
+            "website_description": "test",
+        }
+        url = reverse("bookmarks:bookmark-detail", args=[bookmark.id])
+        self.patch(url, data, expected_status_code=status.HTTP_200_OK)
+        updated_bookmark = Bookmark.objects.get(id=bookmark.id)
+        self.assertNotEqual(
+            data["web_archive_snapshot_url"], updated_bookmark.web_archive_snapshot_url
+        )
+        self.assertNotEqual(data["website_title"], updated_bookmark.website_title)
+        self.assertNotEqual(
+            data["website_description"], updated_bookmark.website_description
+        )
+
+    def test_patch_with_empty_payload_does_not_modify_bookmark(self):
+        self.authenticate()
+        bookmark = self.setup_bookmark(
+            is_archived=True, unread=True, shared=True, tags=[self.setup_tag()]
+        )
 
         url = reverse("bookmarks:bookmark-detail", args=[bookmark.id])
         self.patch(url, {}, expected_status_code=status.HTTP_200_OK)
@@ -611,6 +799,10 @@ class BookmarksApiTestCase(LinkdingApiTestCase, BookmarkFactoryMixin):
         self.assertEqual(updated_bookmark.url, bookmark.url)
         self.assertEqual(updated_bookmark.title, bookmark.title)
         self.assertEqual(updated_bookmark.description, bookmark.description)
+        self.assertEqual(updated_bookmark.notes, bookmark.notes)
+        self.assertEqual(updated_bookmark.is_archived, bookmark.is_archived)
+        self.assertEqual(updated_bookmark.unread, bookmark.unread)
+        self.assertEqual(updated_bookmark.shared, bookmark.shared)
         self.assertListEqual(updated_bookmark.tag_names, bookmark.tag_names)
 
     def test_patch_bookmark_adds_tags_from_auto_tagging(self):
@@ -701,6 +893,8 @@ class BookmarksApiTestCase(LinkdingApiTestCase, BookmarkFactoryMixin):
             url="https://example.com",
             title="Example title",
             description="Example description",
+            favicon_file="favicon.png",
+            preview_image_file="preview.png",
         )
 
         url = reverse("bookmarks:bookmark-check")
@@ -715,19 +909,31 @@ class BookmarksApiTestCase(LinkdingApiTestCase, BookmarkFactoryMixin):
         self.assertEqual(bookmark.url, bookmark_data["url"])
         self.assertEqual(bookmark.title, bookmark_data["title"])
         self.assertEqual(bookmark.description, bookmark_data["description"])
+        self.assertEqual(
+            "http://testserver/static/favicon.png", bookmark_data["favicon_url"]
+        )
+        self.assertEqual(
+            "http://testserver/static/preview.png", bookmark_data["preview_image_url"]
+        )
 
-    def test_check_returns_existing_metadata_if_url_is_bookmarked(self):
+    def test_check_returns_scraped_metadata_if_url_is_bookmarked(self):
         self.authenticate()
 
-        bookmark = self.setup_bookmark(
+        self.setup_bookmark(
             url="https://example.com",
-            website_title="Existing title",
-            website_description="Existing description",
         )
 
         with patch.object(
             website_loader, "load_website_metadata"
         ) as mock_load_website_metadata:
+            expected_metadata = WebsiteMetadata(
+                "https://example.com",
+                "Scraped metadata",
+                "Scraped description",
+                "https://example.com/preview.png",
+            )
+            mock_load_website_metadata.return_value = expected_metadata
+
             url = reverse("bookmarks:bookmark-check")
             check_url = urllib.parse.quote_plus("https://example.com")
             response = self.get(
@@ -735,12 +941,39 @@ class BookmarksApiTestCase(LinkdingApiTestCase, BookmarkFactoryMixin):
             )
             metadata = response.data["metadata"]
 
-            mock_load_website_metadata.assert_not_called()
             self.assertIsNotNone(metadata)
-            self.assertEqual(bookmark.url, metadata["url"])
-            self.assertEqual(bookmark.website_title, metadata["title"])
-            self.assertEqual(bookmark.website_description, metadata["description"])
-            self.assertIsNone(metadata["preview_image"])
+            self.assertEqual(expected_metadata.url, metadata["url"])
+            self.assertEqual(expected_metadata.title, metadata["title"])
+            self.assertEqual(expected_metadata.description, metadata["description"])
+            self.assertEqual(expected_metadata.preview_image, metadata["preview_image"])
+
+    def test_check_returns_no_auto_tags_if_none_configured(self):
+        self.authenticate()
+
+        url = reverse("bookmarks:bookmark-check")
+        check_url = urllib.parse.quote_plus("https://example.com")
+        response = self.get(
+            f"{url}?url={check_url}", expected_status_code=status.HTTP_200_OK
+        )
+        auto_tags = response.data["auto_tags"]
+
+        self.assertCountEqual(auto_tags, [])
+
+    def test_check_returns_matching_auto_tags(self):
+        self.authenticate()
+
+        profile = self.get_or_create_test_user().profile
+        profile.auto_tagging_rules = "example.com tag1 tag2"
+        profile.save()
+
+        url = reverse("bookmarks:bookmark-check")
+        check_url = urllib.parse.quote_plus("https://example.com")
+        response = self.get(
+            f"{url}?url={check_url}", expected_status_code=status.HTTP_200_OK
+        )
+        auto_tags = response.data["auto_tags"]
+
+        self.assertCountEqual(auto_tags, ["tag1", "tag2"])
 
     def test_can_only_access_own_bookmarks(self):
         self.authenticate()
@@ -776,6 +1009,7 @@ class BookmarksApiTestCase(LinkdingApiTestCase, BookmarkFactoryMixin):
             {url: "https://example.com/"},
             expected_status_code=status.HTTP_404_NOT_FOUND,
         )
+        self.patch(url, expected_status_code=status.HTTP_404_NOT_FOUND)
 
         url = reverse(
             "bookmarks:bookmark-detail", args=[inaccessible_shared_bookmark.id]
@@ -785,6 +1019,7 @@ class BookmarksApiTestCase(LinkdingApiTestCase, BookmarkFactoryMixin):
             {url: "https://example.com/"},
             expected_status_code=status.HTTP_404_NOT_FOUND,
         )
+        self.patch(url, expected_status_code=status.HTTP_404_NOT_FOUND)
 
         url = reverse("bookmarks:bookmark-detail", args=[inaccessible_bookmark.id])
         self.delete(url, expected_status_code=status.HTTP_404_NOT_FOUND)

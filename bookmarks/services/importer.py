@@ -79,8 +79,6 @@ def import_netscape_html(
     for batch in batches:
         _import_batch(batch, user, options, tag_cache, result)
 
-    # Create snapshots for newly imported bookmarks
-    tasks.schedule_bookmarks_without_snapshots(user)
     # Load favicons for newly imported bookmarks
     tasks.schedule_bookmarks_without_favicons(user)
     # Load previews for newly imported bookmarks
@@ -233,7 +231,10 @@ def _copy_bookmark_data(
         bookmark.date_added = parse_timestamp(netscape_bookmark.date_added)
     else:
         bookmark.date_added = timezone.now()
-    bookmark.date_modified = bookmark.date_added
+    if netscape_bookmark.date_modified:
+        bookmark.date_modified = parse_timestamp(netscape_bookmark.date_modified)
+    else:
+        bookmark.date_modified = bookmark.date_added
     bookmark.unread = netscape_bookmark.to_read
     if netscape_bookmark.title:
         bookmark.title = netscape_bookmark.title

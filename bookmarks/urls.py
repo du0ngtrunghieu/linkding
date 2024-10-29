@@ -1,6 +1,5 @@
 from django.urls import path, include
 from django.urls import re_path
-from django.views.generic import RedirectView
 
 from bookmarks import views
 from bookmarks.api.routes import router
@@ -10,14 +9,11 @@ from bookmarks.feeds import (
     SharedBookmarksFeed,
     PublicSharedBookmarksFeed,
 )
-from bookmarks.views import partials
 
 app_name = "bookmarks"
 urlpatterns = [
-    # Redirect root to bookmarks index
-    re_path(
-        r"^$", RedirectView.as_view(pattern_name="bookmarks:index", permanent=False)
-    ),
+    # Root view handling redirection based on user authentication
+    re_path(r"^$", views.root, name="root"),
     # Bookmarks
     path("bookmarks", views.bookmarks.index, name="index"),
     path("bookmarks/action", views.bookmarks.index_action, name="index.action"),
@@ -34,21 +30,6 @@ urlpatterns = [
     path("bookmarks/new", views.bookmarks.new, name="new"),
     path("bookmarks/close", views.bookmarks.close, name="close"),
     path("bookmarks/<int:bookmark_id>/edit", views.bookmarks.edit, name="edit"),
-    path(
-        "bookmarks/<int:bookmark_id>/details",
-        views.bookmarks.details,
-        name="details",
-    ),
-    path(
-        "bookmarks/<int:bookmark_id>/details_modal",
-        views.bookmarks.details_modal,
-        name="details_modal",
-    ),
-    path(
-        "bookmarks/<int:bookmark_id>/details_assets",
-        views.bookmarks.details_assets,
-        name="details_assets",
-    ),
     # Assets
     path(
         "assets/<int:asset_id>",
@@ -60,55 +41,10 @@ urlpatterns = [
         views.assets.read,
         name="assets.read",
     ),
-    # Partials
-    path(
-        "bookmarks/partials/bookmark-list/active",
-        partials.active_bookmark_list,
-        name="partials.bookmark_list.active",
-    ),
-    path(
-        "bookmarks/partials/tag-cloud/active",
-        partials.active_tag_cloud,
-        name="partials.tag_cloud.active",
-    ),
-    path(
-        "bookmarks/partials/tag-modal/active",
-        partials.active_tag_modal,
-        name="partials.tag_modal.active",
-    ),
-    path(
-        "bookmarks/partials/bookmark-list/archived",
-        partials.archived_bookmark_list,
-        name="partials.bookmark_list.archived",
-    ),
-    path(
-        "bookmarks/partials/tag-cloud/archived",
-        partials.archived_tag_cloud,
-        name="partials.tag_cloud.archived",
-    ),
-    path(
-        "bookmarks/partials/tag-modal/archived",
-        partials.archived_tag_modal,
-        name="partials.tag_modal.archived",
-    ),
-    path(
-        "bookmarks/partials/bookmark-list/shared",
-        partials.shared_bookmark_list,
-        name="partials.bookmark_list.shared",
-    ),
-    path(
-        "bookmarks/partials/tag-cloud/shared",
-        partials.shared_tag_cloud,
-        name="partials.tag_cloud.shared",
-    ),
-    path(
-        "bookmarks/partials/tag-modal/shared",
-        partials.shared_tag_modal,
-        name="partials.tag_modal.shared",
-    ),
     # Settings
     path("settings", views.settings.general, name="settings.index"),
     path("settings/general", views.settings.general, name="settings.general"),
+    path("settings/update", views.settings.update, name="settings.update"),
     path(
         "settings/integrations",
         views.settings.integrations,
@@ -129,4 +65,6 @@ urlpatterns = [
     path("health", views.health, name="health"),
     # Manifest
     path("manifest.json", views.manifest, name="manifest"),
+    # Custom CSS
+    path("custom_css", views.custom_css, name="custom_css"),
 ]
